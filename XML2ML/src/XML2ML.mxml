@@ -1,0 +1,480 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					   xmlns:s="library://ns.adobe.com/flex/spark" title="XML转ML" width="610" height="400"
+					   xmlns:mx="library://ns.adobe.com/flex/mx" initialize="onInit( event )" invoke="onInvoke( event )" closing="onClose( event )">
+	<fx:Script>
+		<![CDATA[
+			import flash.utils.ByteArray;
+			
+			import mx.collections.ArrayCollection;
+			import mx.events.FlexEvent;
+			import mx.events.ItemClickEvent;
+			import mx.utils.ObjectProxy;
+			
+			import common.windowMiddle;
+			
+			private static const FONT:Array = [ [ "SimSun", "Microsoft YaHei", "LiSu" ], [ "SimSun", "Microsoft YaHei", "LiSu" ], ["TahoMa", "TahoMa", "TahoMa"] ];
+			/** xml编译后的默认输出文件目录 **/
+			public static const DEF_OUT_PATH:String = "/out/";
+			/** 编译后输出文件后缀 **/
+			public static const COMPILED_XML_EXT:String = "ml";
+			
+			/** 是否选择目录 **/
+			public var isFolder:Boolean;
+			private var debug:String;
+			private var xml:XML;
+			private var outPath:String;
+			[Bindable]
+			private var dataGridBind:ArrayCollection;
+			private var files:Vector.<File>;
+			private var configFile:String;
+			private var compileType:String;
+			private var langXML:XML;
+			private var lang:Vector.<String>;
+			private var activityString:Vector.<String>;
+			private var activityValue:String;
+			
+			private var mainToWorker:MessageChannel;
+			private var workerToMain:MessageChannel;
+			private var _start:Boolean;
+			private var worker:Worker;
+			private var fileList:Vector.<File>;
+			private var fileIndex:uint;
+			
+			/** xml2ml.p12证书密码是：123456 **/
+			
+			private function setFileList():void
+			{
+				fileList = new Vector.<File>();
+				var l:uint = dataGridBind.length;
+				for ( var i:int = 0; i < l; i++)
+				{
+					if ( dataGridBind[ i ].selected )
+					{
+						fileList.push( files[ i ] );
+					}
+				}
+			}
+			private function initFiles( f:File, selected:Boolean ):void
+			{
+				files.push( f );
+				dataGridBind.addItem( new ObjectProxy( { selected:selected, path:f.nativePath } ) );
+			}
+			private function push( f:Array ):void
+			{
+				files.push.apply( null, f );
+				
+				for (var i:int = 0; i < f.length; i++)
+				{
+					var onePath:String = f[ i ].nativePath;
+					dataGridBind.addItem( new ObjectProxy( { selected:true, path:onePath } ) );
+					
+					var fromXML:XML = xml.from[ 0 ];
+					var x:XML = new XML( "<path>" + onePath + "</path>" );
+					fromXML.appendChild( x );
+				}
+			}
+			public function removeChoosen( index:uint ):void
+			{
+				if ( index < files.length )
+				{
+					files.splice( index, 1 );
+					dataGridBind.removeItemAt( index );
+					delete xml.from[ 0 ].path[ index ];
+				}
+			}
+			public function setChoose( index:uint, selected:Boolean ):void
+			{
+				dataGridBind[ index ].selected = selected;
+				xml.from[ 0 ].path[ index ].@selected = selected.toString();
+			}
+			protected function onClose( e:Event ):void
+			{
+				if ( null == configFile )
+				{
+					return;
+				}
+				var file:File = new File( File.applicationDirectory.nativePath );
+				file = file.resolvePath( configFile );
+				var stream:FileStream = new FileStream();
+				stream.open(file,FileMode.WRITE);
+				stream.writeUTFBytes( xml );
+				stream.close();
+			}
+			private function onInvoke( event:InvokeEvent ):void
+			{
+				var args:Array = event.arguments.slice( 0 );
+				configFile = ( args.length == 0 ) ? File.applicationDirectory.nativePath + "\\config.txt" : args[ 0 ];
+				var file:File = new File( configFile );
+				if ( !file.exists )
+				{
+					println( "指定配制文件不存在", configFile );
+					configFile = null;
+					return;
+				}
+				files = new Vector.<File>();
+				dataGridBind = new ArrayCollection();
+				lang = new <String>[ "cn", "tw", "yn" ];lang.fixed = true;
+				activityString = new <String>[ "activity", "uixmls" ];activityString.fixed = true;
+				var xmlstream:FileStream = new FileStream();
+				xmlstream.open( file, FileMode.READ );
+				var xmlbytes:ByteArray = new ByteArray();
+				xmlstream.readBytes( xmlbytes );
+				xmlstream.close();
+				xml = new XML( xmlbytes );
+				outPath = xml.to[ 0 ].toString();
+				debug = ( args.length == 0 ) ? xml.attribute( "debug" ) : args[ 1 ];
+				var pathXMLList:XMLList = xml.from[ 0 ].path;
+				parseLangXML();
+				var l:int = pathXMLList.length();
+				for (var i:int = 0; i < l; i++)
+				{
+					var pa:String = pathXMLList[ i ].toString();
+					var f:File = new File( pa );
+					if ( !f.exists )
+					{
+						continue;
+					}
+					initFiles( f, "true" == pathXMLList[ i ].attribute( "selected" ) );
+				}
+				autoCB.selected = "true" == String( xml.@close );
+				compileType = "file";
+				if ( compileType == xml.attribute( "type" ) )
+				{
+					folderRB.selected = false;
+					fileRB.selected = true;
+					rbFile( null );
+				}
+				else
+				{
+					folderRB.selected = true;
+					fileRB.selected = false;
+					rbFolder( null );
+				}
+				stage.addEventListener( KeyboardEvent.KEY_DOWN, onKeyDown );
+			}
+			private function onKeyDown( event:KeyboardEvent ):void
+			{
+				if ( event.keyCode == Keyboard.SPACE || event.keyCode == Keyboard.ENTER )
+				{
+					begin();
+				}
+				else	if ( event.keyCode == Keyboard.ESCAPE )
+				{
+					close();
+				}
+			}
+			private function onConfirm( e:MouseEvent ):void
+			{
+				begin();
+			}
+			private function popUp():void
+			{
+				this.nativeWindow.alwaysInFront = true;
+				this.nativeWindow.alwaysInFront = false;
+			}
+			private function begin():void
+			{
+				if ( !_start )
+				{
+					completeLabel.text = "开始编译......";
+					startCompileThread();
+				}
+			}
+			private function startCompileThread():void
+			{
+				_start = true;
+				if( null == worker )
+				{
+					worker = WorkerDomain.current.createWorker( Workers.core_SecondThread );
+					mainToWorker = Worker.current.createMessageChannel( worker );
+					workerToMain = worker.createMessageChannel( Worker.current );
+					worker.setSharedProperty( "mainToWorker", mainToWorker );
+					worker.setSharedProperty( "workerToMain", workerToMain );
+					worker.setSharedProperty( "debug", debug );
+					workerToMain.addEventListener( Event.CHANNEL_MESSAGE, onWorkerToMain );
+					worker.addEventListener( Event.WORKER_STATE, workerStateHandler ); 
+					worker.start();
+				}
+				else
+				{
+					workerStateHandler( null );
+				}
+			}
+			private function workerStateHandler( event:Event ):void 
+			{
+				if ( worker.state == WorkerState.RUNNING && _start )
+				{
+					if ( folderBtn.visible )
+					{
+						fileList = new Vector.<File>();
+						fileList.push.apply( null, new File( folder.text ).getDirectoryListing() as Array );
+					}
+					else
+					{
+						setFileList();
+					}
+					worker.setSharedProperty( "font", FONT[ langRBG.selectedIndex ] );
+					fileIndex = 0;
+					compileNext();
+				}
+			}
+			private function output():void
+			{
+				var file:File = fileList[ fileIndex - 1 ];
+				var outputfilename:String = file.name.replace( file.extension, COMPILED_XML_EXT );
+				var compiledfile:File = new File( file.parent.parent.nativePath + DEF_OUT_PATH + outputfilename );
+				var outstream:FileStream = new FileStream();
+				outstream.open( compiledfile, FileMode.WRITE );
+				outstream.writeObject( ByteArray( worker.getSharedProperty( "output" ) ).readObject() );
+				outstream.close();
+			}
+			private function compileNext():void
+			{
+				if ( fileIndex < fileList.length )
+				{
+					var fileName:String = fileList[ fileIndex ].name;
+					if ( fileName.split( "." )[ 1 ] == "xml" )
+					{
+						var xmlStream:FileStream = new FileStream();
+						xmlStream.open( fileList[ fileIndex ], FileMode.READ );
+						var xmlbytes:ByteArray = new ByteArray();
+						xmlStream.readBytes( xmlbytes );
+						xmlStream.close();
+						
+						completeLabel.text = fileIndex + " \\ " + fileList.length + "  正在编译 : " + fileName;
+						xmlbytes.shareable = true;
+						worker.setSharedProperty( "input", xmlbytes );
+						mainToWorker.send( fileName );
+						fileIndex++;
+					}
+					else
+					{
+						fileIndex++;
+						compileNext();
+					}
+				}
+				else
+				{
+					exitFunc();
+				}
+			}
+			private function onWorkerToMain(event:Event):void
+			{
+				var cmd:String = workerToMain.receive();
+				if ( cmd == "next" )
+				{
+					output();
+					compileNext();
+				}
+				else if ( cmd == "as" )
+				{
+					var code:String = worker.getSharedProperty( "code" );
+					var fileName:String = workerToMain.receive();
+					
+					var file:File = fileList[ fileIndex - 1 ];
+					var outputfilename:String = file.name.replace( file.extension, COMPILED_XML_EXT );
+					var asFile:File = new File( file.parent.parent.nativePath + DEF_OUT_PATH + fileName );
+					var outstream:FileStream = new FileStream();
+					outstream.open( asFile, FileMode.WRITE );
+					outstream.writeUTFBytes( code );
+					outstream.close();
+				}
+				else if ( cmd == "println" )
+				{
+					println.apply( null, workerToMain.receive() as Array );
+				}
+				else if ( cmd == "exit" )
+				{
+					exitFunc( workerToMain.receive() );
+				}
+			}
+			
+			private function exitFunc( code:int = 0 ):void
+			{
+				if ( code != 0 )
+				{
+					return;
+				}
+				if ( autoCB.selected )
+				{
+					close();
+				}
+				else
+				{
+					completeLabel.text = "编译完成";
+					_start = false;
+					popUp();
+				}
+			}
+			public function println( ...msgs ):void
+			{
+				txt.visible = true;
+				visibleBtn.visible = true;
+				txt.text += "\n" + msgs.join( " " );
+			}
+			private function chooseFolder( e:MouseEvent ):void
+			{
+				var file:File = new File( folder.text );
+				file.browseForDirectory( "请选择一个目录..." );
+				file.addEventListener( Event.SELECT, folderHanlder );
+			}
+			private function folderHanlder(e:Event):void
+			{
+				folder.text = e.target.nativePath;    //绝对路径
+				langXML[ langXML.@value ][ 0 ][ activityValue ][ 0 ] = folder.text;
+			}
+			private function onClick( e:MouseEvent ):void
+			{
+				var file:File = new File( folder.text );
+				file.browseForOpenMultiple( "选择XML文件 [ 可选择多个 ]" );
+				file.addEventListener( FileListEvent.SELECT_MULTIPLE, selectMutipleFile );
+			}
+			private function selectMutipleFile( e:FileListEvent ):void
+			{
+				push( e.files );
+			}
+			private function rbFolder(event:Event):void
+			{
+				xml.@type = "folder";
+				folderBtn.visible = true;
+				fileBtn.visible = false;
+			}
+			
+			private function rbFile(event:Event):void
+			{
+				xml.@type = compileType;
+				folderBtn.visible = false;
+				fileBtn.visible = true;
+			}
+			private function onInit(event:FlexEvent):void
+			{
+				windowMiddle( this );
+			}
+			
+			private function parseLangXML():void
+			{
+				langXML = xml.language[ 0 ];
+				var value:String = langXML.attribute( "value" );//语言版本
+				activityValue = langXML[ value ][ 0 ].attribute( "value" );//活动还是静态面板
+				folder.text = langXML[ value ][ 0 ][ activityValue ][ 0 ].toString();
+				
+				langRBG.selectedIndex = lang.indexOf( value );
+				activityRBG.selectedIndex = activityString.indexOf( activityValue );
+			}
+			private function langRB( e:ItemClickEvent ):void
+			{
+				langXML.@value = lang[ langRBG.selectedIndex ];
+				folder.text = langXML[ langXML.@value ][ 0 ][ activityValue ][ 0 ].toString();
+			}
+			private function activity( e:ItemClickEvent ):void
+			{
+				activityValue = activityString[ activityRBG.selectedIndex ];
+				langXML[ langXML.@value ][ 0 ].@value = activityValue;
+				folder.text = langXML[ langXML.@value ][ 0 ][ activityValue ][ 0 ].toString();
+			}
+			/**
+			 * 返回
+			 */
+			private function visibleTrue(event:MouseEvent):void
+			{
+				visibleBtn.visible = false;
+				txt.visible = false;
+				txt.text = "";
+				completeLabel.text = "";
+				_start = false;
+			}
+			
+			protected function autoClose(event:MouseEvent):void
+			{
+				xml.@close = autoCB.selected.toString();
+			}
+			
+		]]>
+	</fx:Script>
+	<fx:Declarations>
+		<s:RadioButtonGroup id="langRBG" itemClick="langRB(event);"/>
+		<s:RadioButtonGroup id="activityRBG" itemClick="activity(event);"/>
+	</fx:Declarations>
+	<s:Label id="folder" x="10" y="6"/>
+	<s:VGroup x="10" y="20" gap="0">
+		<s:RadioButton groupName="chooseType" selected="false" id="folderRB" label="编译文件夹" width="150" click="rbFolder(event);"/>
+		<s:RadioButton groupName="chooseType" selected="true" id="fileRB" label="编译选择文件" width="150" click="rbFile(event);"/>
+	</s:VGroup>
+	<s:VGroup x="170" y="20" gap="0">
+		<s:RadioButton groupName="langRBG" selected="true" id="cnRB" label="简体中文" width="150"/>
+		<s:RadioButton groupName="langRBG" selected="false" id="twRB" label="繁体中文" width="150"/>
+		<s:RadioButton groupName="langRBG" selected="false" id="ynRB" label="越南文" width="150"/>
+	</s:VGroup>
+	<s:VGroup x="330" y="20" gap="0">
+		<s:RadioButton groupName="activityRBG" selected="true" id="activityRB" label="活动" width="150"/>
+		<s:RadioButton groupName="activityRBG" selected="false" id="uixmlsRB" label="静态面板" width="150"/>
+	</s:VGroup>
+	<s:Button id="folderBtn" click="chooseFolder( event )" x="10" y="75" label="选择目录" visible="false"/>
+	<s:Button id="fileBtn" click="onClick( event )" x="10" y="75" label="增加文件"/>
+	<s:Button id="compileBtn" click="onConfirm( event )" x="440" y="40" label="开始编译"/>
+	<s:CheckBox x="540" y="40" id="autoCB" click="autoClose( event )" textDecoration="underline" toolTip="编译完成后自动关闭"/>
+	<s:Label id="closeLabel" x="560" y="44" text="自动关闭"/>
+	<s:Label id="completeLabel" x="200" y="84" text=""/>
+	
+	<s:Panel y="100" title="选择的XML文件                                      [ 按空格、回车键 开始编译；Esc退出 ]" width="100%" height="100%">
+			<s:DataGrid dataProvider="{ dataGridBind }" width="100%" height="100%">
+				<s:columns>
+					<s:ArrayList>
+						<s:GridColumn headerText="是/否" width="50" >
+							<s:itemRenderer>
+								<fx:Component>
+									<s:GridItemRenderer>
+										
+										<fx:Script>
+											<![CDATA[
+												protected function onClick( event:MouseEvent ):void
+												{
+													outerDocument.setChoose( rowIndex, CheckBox( event.currentTarget ).selected );
+												}
+											]]>
+										</fx:Script>
+										
+										<s:CheckBox x="10" y="2" click="onClick(  event )" selected="{ data.selected }"/>
+									</s:GridItemRenderer>
+								</fx:Component>
+							</s:itemRenderer>
+						</s:GridColumn>
+						
+						<s:GridColumn headerText="路径" width="450" >
+							<s:itemRenderer>
+								<fx:Component>
+									<s:GridItemRenderer>
+										<s:Label x="4" y="6" text="{ data.path }"/>
+									</s:GridItemRenderer>
+								</fx:Component>
+							</s:itemRenderer>
+						</s:GridColumn>
+						
+						<s:GridColumn headerText="去除" width="60" >
+							<s:itemRenderer>
+								<fx:Component>
+									<s:GridItemRenderer>
+										
+										<fx:Script>
+											<![CDATA[
+												protected function onClick( e:MouseEvent ):void
+												{
+													outerDocument.removeChoosen( rowIndex );
+												}
+											]]>
+										</fx:Script>
+										
+										<s:Button click="onClick( event )" x="10" y="2" label="取消"/>
+									</s:GridItemRenderer>
+								</fx:Component>
+							</s:itemRenderer>
+						</s:GridColumn>
+						
+					</s:ArrayList>
+				</s:columns>
+			</s:DataGrid>
+		</s:Panel>
+		<s:TextArea editable="false" id="txt" visible="false" width="100%" y="20" height="94%" text=""/>
+		<s:Button visible="false" id="visibleBtn" click="visibleTrue( event )" x="0" y="0" width="100%" height="6%" label="返回"/>
+</s:WindowedApplication>

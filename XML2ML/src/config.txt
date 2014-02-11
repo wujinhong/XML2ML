@@ -1,0 +1,20 @@
+<config type="folder" debug="compile" close="false">
+  <language value="cn">
+    <cn value="activity">
+      <uixmls>D:\ylws\publish_res\trunk\client\res\cn\uixmls\xml</uixmls>
+      <activity>D:\ylws\publish_res\trunk\client\coop\activity\cn</activity>
+    </cn>
+    <tw value="uixmls">
+      <uixmls>D:\ylws\publish_res\trunk\client\res\tw\uixmls\xml</uixmls>
+      <activity>D:\ylws\publish_res\trunk\client\coop\activity\tw</activity>
+    </tw>
+    <yn value="activity">
+      <uixmls>D:\ylws\publish_res\trunk\client\res\yn\uixmls\xml</uixmls>
+      <activity>D:\ylws\publish_res\trunk\client\coop\activity\yn</activity>
+    </yn>
+  </language>
+  <from>
+    <path selected="false">D:\ylws\publish_res\trunk\client\coop\activity\xml\ActivityMenusPanel.xml</path>
+  </from>
+  <to>D:\ylws\publish_res\trunk\client\res\cn\uixmls\out</to>
+</config>
